@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import math
 import os
 import time
 import uuid
@@ -114,10 +115,17 @@ def _resolve_timeout_seconds(env_var: str, default: Optional[float]) -> Optional
     if raw is None or raw.strip() == "":
         return default
     try:
-        return float(raw)
+        val = float(raw)
     except ValueError:
         logger.warning(f"Ignoring non-numeric {env_var}={raw!r}, using {default}")
         return default
+    if val < 0 or not math.isfinite(val):
+        logger.warning(
+            f"Ignoring invalid {env_var}={raw!r} (negative or non-finite), "
+            f"using {default}"
+        )
+        return default
+    return val
 
 
 def _resolve_client_timeout(
