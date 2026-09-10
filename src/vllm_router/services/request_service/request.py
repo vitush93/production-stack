@@ -101,6 +101,32 @@ _HEADERS_TO_STRIP_FROM_RESPONSE = {
 }
 
 
+def _resolve_timeout_seconds(env_var: str, default: Optional[float]) -> Optional[float]:
+    """Resolve a backend request timeout: ``env_var`` > ``default``.
+
+    Follows the ``LOADAWARE_BETA`` env fallback pattern: the value is read
+    on every request so it can be adjusted on a running deployment without
+    changing the router's command line. Empty or non-numeric values fall
+    back to the default. A value of ``None`` means the aiohttp total
+    timeout is uncapped.
+    """
+    raw = os.environ.get(env_var)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(f"Ignoring non-numeric {env_var}={raw!r}, using {default}")
+        return default
+
+
+def _resolve_client_timeout(
+    env_var: str, default: Optional[float]
+) -> aiohttp.ClientTimeout:
+    """Build an aiohttp request timeout from ``env_var``, falling back to ``default``."""
+    return aiohttp.ClientTimeout(total=_resolve_timeout_seconds(env_var, default))
+
+
 def _is_json_media_type(content_type: str) -> bool:
     media_type = content_type.partition(";")[0].strip().lower()
     return media_type == "application/json" or media_type.endswith("+json")
@@ -315,7 +341,7 @@ async def process_request(
             url=backend_url + endpoint,
             headers=headers,
             data=body,
-            timeout=aiohttp.ClientTimeout(total=None),
+            timeout=_resolve_client_timeout("ROUTER_PROXY_TIMEOUT_SECONDS", None),
         ) as backend_response:
             http_status_code = backend_response.status
             # Set response status on span if tracing
@@ -831,7 +857,7 @@ async def route_orchestrated_disaggregated_request(
                 "Content-Type": "application/json",
                 "X-Request-Id": request_id,
             },
-            timeout=aiohttp.ClientTimeout(total=300),
+            timeout=_resolve_client_timeout("ROUTER_PREFILL_TIMEOUT_SECONDS", 300),
         ) as prefill_resp:
             if prefill_resp.status != 200:
                 error_text = await prefill_resp.text()
@@ -877,7 +903,7 @@ async def route_orchestrated_disaggregated_request(
                 "Content-Type": "application/json",
                 "X-Request-Id": request_id,
             },
-            timeout=aiohttp.ClientTimeout(total=600),
+            timeout=_resolve_client_timeout("ROUTER_DECODE_TIMEOUT_SECONDS", 600),
         )
         try:
             if decode_resp.status != 200:
@@ -1337,7 +1363,9 @@ async def proxy_multipart_request(
                 f"{chosen_url}{endpoint}",
                 data=form_data,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=300),
+                timeout=_resolve_client_timeout(
+                    "ROUTER_MULTIPART_TIMEOUT_SECONDS", 300
+                ),
             )
         except Exception:
             request_stats_monitor.on_request_complete(
